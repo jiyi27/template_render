@@ -1,20 +1,394 @@
-## 1. 协议模板背景介绍
+## 1. 协议表重构
 
 > 背景: 模板是用来创建协议的, 协议就像合同 有 甲方 乙方 客户名 协议内容 等等信息, 但是呢不同的类型客户可能需要不同类型的合同协议格式, 所以才会有很多协议模板, 就像我们写简历的时候也会有不同的模板, 创建简历一般不会选个空白文档开始自己写, 而是选个自己喜欢的模板开始写, 协议模板大概也是这个意思
 
-如果协议由模板来创建, 那协议的字段可能是不确定的, 可以跟负责协议这一块的 pm 确认一下, 两种情况:
+协议由模板来创建, 那协议的字段是不确定的, 因为不同模板有不同字段, 但是协议也有一些共同的字段:
 
-1. 协议的字段是不固定的, 由模板决定的, 如不同的模板有不同的字段, 
-2. 协议的字段是固定的, 协议模板只是用来生成一个协议(合同) pdf 文件, 后续盖章, 录入存储到文件服务器, 这样我们的协议只用存一个 pdf 文件的存储路径即可
+- id(PK)
+- 协议编号
+- 协议名称
+- 客户名称
+- 签订时间
+- 状态 
+- 等等
 
-如果是第一种情况, 现有代码就需要更改, 因为协议的字段不确定, 我们有两种实现方式:
+考虑到用户有编辑协议的需求, 也就是编辑草稿单, 而草稿单是根据协议模板创建的, 所以协议也要额外存储存储协议模板里的其他字段(除了上面必须有的字段), 且当前端加载草稿单的时候要保证返回的数据 各个字段对应的值 可以被前端正确解析, 所以直接添加两个字段 template_id, template_values, 其中 values 为 JSON 格式, 用于存储非公共字段, 最后协议表结构:
 
-1. 给协议增加一个 values 字段, 类型为 json, 这样就可以应对字段频繁改变, 可是这样有个明显的缺点, 就是无法保证数据的一致性, 比如我们无法确定是不是模板要求的字段 values 都填了, 还是缺少了, 以及字段的类型, 当然这可以在业务层实现, 但是**查询效率**会很低, 比如我们通过模板的某个字段来查询协议
-2. 另一种方式就是通过新建一张表, **协议字段值表**, 记录协议都是有什么字段, 对应的值是什么
+```sql
+-- 最终协议表定义
+CREATE TABLE `agreement` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT COMMENT '主键，自增',
+  `agreement_no` VARCHAR(20) NOT NULL COMMENT '协议编号，格式如20250210ABC0001',
+  `agreement_name` VARCHAR(100) DEFAULT NULL COMMENT '协议名称，如xxxx旅行社协议',
+  `agreement_type` VARCHAR(50) DEFAULT NULL COMMENT '协议类型',
+  `customer_name` VARCHAR(100) DEFAULT NULL COMMENT '客户名称，如xxxx公司',
+  `customer_type` VARCHAR(20) DEFAULT NULL COMMENT '客户类型',
+  `template_id` INT(11) NOT NULL COMMENT '协议模板id',
+  `template_values` JSON DEFAULT NULL COMMENT '协议模板特有字段', 
+  `sign_date` DATE DEFAULT NULL COMMENT '签订时间',
+  `agreement_file` VARCHAR(255) DEFAULT NULL COMMENT '协议文件路径',
+  `is_offline` TINYINT(1) DEFAULT NULL COMMENT '是否为离线上传',
+  `status` INT(11) NOT NULL DEFAULT 1 COMMENT '协议状态：1-草稿单, 2-待审批, 3-审批同意, 4-审批拒绝, 5-已删除, 6-已取消',
+  `applicant_name` VARCHAR(50) DEFAULT NULL COMMENT '申请人姓名',
+  `applicant_id` INT(11) DEFAULT NULL COMMENT '申请人ID',
+  `application_date` DATETIME DEFAULT NULL COMMENT '申请日期',
+  `delete_time` DATETIME DEFAULT NULL COMMENT '删除时间',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_agreement_no` (`agreement_no`),
+  KEY `idx_status` (`status`),
+  KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='协议表';
+```
 
-关于协议的实现, 暂不讨论, 这里主要说一下模板的实现, 后端存储模板字段, 类别, 前端动态渲染:
+> 协议的状态, 审批人等逻辑不变, 因为这里我们只是增加一些无关字段, 关于协议审批表的定义和逻辑可以参考 `017-协议 价格政策数据库表定义` 文档, 注意不要把协议模板id设置为外键且级连删除, 这样的话如果不小心删除了某个协议模板, 所有的协议都会被删除, 很危险
 
-## 2. 具体实现
+### 1.1. 前端如何打包数据
+
+当前端客户提交创建协议的时候, 由前端负责对数据进行格式化, 即: 把协议公共字段单独处理, 然后非公共字段(模板特有字段) 打包到 请求体 values 字段中, 具体方式可参考:
+
+```javascript
+function submitAgreement(formData) {
+  // 在这里添加基本字段
+  const basicFields = {
+    agreementName: formData.agreementName,
+    agreementType: formData.agreementType,
+    customerName: formData.customerName,
+    customerType: formData.customerType,
+    signDate: formData.signDate,
+    // 其他基本字段...
+  };
+  
+  // 单独打包模板特有字段
+  const templateValues = {};
+  
+  // 假设 formData.fields 包含所有字段
+  for (const key in formData.fields) {
+    if (!Object.keys(basicFields).includes(key)) {
+      templateValues[key] = formData.fields[key];
+    }
+  }
+  
+  // 发送到后端
+  return api.post('/agreements', {
+    ...basicFields,
+    template_id: formData.templateId,
+    template_values: templateValues
+  });
+}
+```
+
+### 1.2. 后端返回的数据格式
+
+先插入测试数据, 插入模板数据, 复制下面的 json 数据到 swagger 文档, 找到 POST /v1/templates, 进行创建模板 (注意前提是 此时已经有模板类别 id 为 1 的记录了, 也就是说你得先插入模板类别数据, 文档后面我给出了如何上传模板类别的方法):
+
+```json
+{
+  "name": "旅游服务协议模板",
+  "category_id": 1,
+  "description": "适用于旅行社与客户签订的标准旅游服务协议",
+  "content": "<h1>{{agreement_name}}</h1>\n\n<p><strong>甲方（服务方）：</strong>ABC旅行社</p>\n<p><strong>乙方（客户方）：</strong>{{customer_name}}</p>\n\n<p><strong>客户类型：</strong>{{customer_type}}</p>\n<p><strong>协议类型：</strong>{{agreement_type}}</p>\n\n<h2>一、服务内容</h2>\n<p>1. 旅游目的地：{{destination}}</p>\n<p>2. 行程天数：{{travel_days}}天</p>\n<p>3. 出发日期：{{start_date}}</p>\n<p>4. 返回日期：{{end_date}}</p>\n<p>5. 出行人数：{{people_count}}人</p>\n\n<h2>二、签订日期</h2>\n<p>{{sign_date}}</p>",
+  "is_active": true,
+  "fields": [
+    {
+      "field_name": "协议名称",
+      "field_key": "agreement_name",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 1
+    },
+    {
+      "field_name": "客户名称",
+      "field_key": "customer_name",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 2
+    },
+    {
+      "field_name": "客户类型",
+      "field_key": "customer_type",
+      "field_type": "dropdown",
+      "is_required": true,
+      "default_value": "个人客户",
+      "order": 3
+    },
+    {
+      "field_name": "协议类型",
+      "field_key": "agreement_type",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "旅游服务协议",
+      "order": 4
+    },
+    {
+      "field_name": "签订日期",
+      "field_key": "sign_date",
+      "field_type": "date",
+      "is_required": true,
+      "default_value": "",
+      "order": 5
+    },
+    {
+      "field_name": "目的地",
+      "field_key": "destination",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 6
+    },
+    {
+      "field_name": "行程天数",
+      "field_key": "travel_days",
+      "field_type": "number",
+      "is_required": true,
+      "default_value": "5",
+      "order": 7
+    },
+    {
+      "field_name": "出发日期",
+      "field_key": "start_date",
+      "field_type": "date",
+      "is_required": true,
+      "default_value": "",
+      "order": 8
+    },
+    {
+      "field_name": "返回日期",
+      "field_key": "end_date",
+      "field_type": "date",
+      "is_required": true,
+      "default_value": "",
+      "order": 9
+    },
+    {
+      "field_name": "出行人数",
+      "field_key": "people_count",
+      "field_type": "number",
+      "is_required": true,
+      "default_value": "1",
+      "order": 10
+    }
+  ]
+}
+```
+
+然后上传协议, 找到 POST /v1/agreements/drafts, 然后填入数据 (注意下面 `template_id` 我填的 10, 你应该改成上面刚创建的模板的 id):
+
+```json
+{
+  "agreement_name": "张三日本东京五日游服务协议",
+  "customer_name": "张三",
+  "agreement_type": "旅游服务协议",
+  "customer_type": "个人客户",
+  "agreement_file": "",
+  "sign_date": "2025-04-05",
+  "template_id": 10,
+  "template_values": {
+    "agreement_name": "张三日本东京五日游服务协议",
+    "customer_name": "张三",
+    "agreement_type": "旅游服务协议",
+    "customer_type": "个人客户",
+    "sign_date": "2025-04-05",
+    "destination": "日本东京",
+    "travel_days": "5",
+    "start_date": "2025-05-01",
+    "end_date": "2025-05-05",
+    "people_count": "2"
+  }
+}
+```
+
+然后到 GET   /v1/agreements/load/{agreement_id} 获取具体信息:
+
+```json
+{
+  "code": 200,
+  "msg": "获取协议成功",
+  "data": {
+    "agreement_name": "张三日本东京五日游服务协议",
+    "agreement_type": "旅游服务协议",
+    "customer_name": "张三",
+    "customer_type": "个人客户",
+    "sign_date": "2025-04-05T00:00:00",
+    "template_id": 10,
+    "template_values": {
+      "end_date": "2025-05-05",
+      "sign_date": "2025-04-05",
+      "start_date": "2025-05-01",
+      "destination": "日本东京",
+      ...
+    },
+    "template": {
+      "name": "旅游服务协议模板",
+      "category_id": null,
+      "description": "适用于旅行社与客户签订的标准旅游服务协议",
+      "content": "<h1>{{agreement_name}}</h1>\n\n<p><strong>甲方（服务方）：</strong>ABC旅行社</p>\n<p><strong>乙方（客户方）：</strong>{{customer_name}}</p>\n\n<p><strong>客户类型：</strong>{{customer_type}}</p>\n<p><strong>协议类型：</strong>{{agreement_type}}</p>\n\n<h2>一、服务内容</h2>\n<p>1. 旅游目的地：{{destination}}</p>\n<p>2. 行程天数：{{travel_days}}天</p>\n<p>3. 出发日期：{{start_date}}</p>\n<p>4. 返回日期：{{end_date}}</p>\n<p>5. 出行人数：{{people_count}}人</p>\n\n<h2>二、签订日期</h2>\n<p>{{sign_date}}</p>",
+      "is_active": true,
+      "id": null,
+      "created_by": null,
+      "create_time": null,
+      "update_time": null,
+      "fields": [
+        {
+          "field_name": "协议名称",
+          "field_key": "agreement_name",
+          "field_type": "text",
+          "is_required": true,
+          "default_value": "",
+          "order": 1,
+          "id": null,
+          "template_id": null
+        },
+        {
+          "field_name": "客户名称",
+          "field_key": "customer_name",
+          "field_type": "text",
+          "is_required": true,
+          "default_value": "",
+          "order": 2,
+          "id": null,
+          "template_id": null
+        },
+        ....
+      ]
+    }
+  }
+}
+```
+
+### 1.3. 前端如何解析后端返回的数据
+
+解析数据的主要难点在于如何正确加载所有的数据, 后端已经给出了全部你需要的数据, 首先后端给出了该协议使用的模板的所有的信息, 在这里前端只需要两个信息:模板的 content 和 fields, fields 包含了该协议的所有字段:
+
+- 公共字段
+- 模板特有字段
+
+除此之外每个字段的排序也都包含在内了, 所以渲染协议逻辑和最开始的渲染协议模板逻辑几乎一模一样, 唯一的区别就是, 我们需要把后端传来的对应字段的数据分别加载到对应的 field, 这里后端可以保证的一项是: 所有协议对应的值 的 key 都是和模板的每个 field 的 field_key 相同的, 所以把协议的各个字段对应的值, 插入到 模板对应的 field, 应该不是很难, 
+
+比如模板的 fields 为:
+
+```json
+[
+  {
+    "field_name": "协议名称",
+    "field_key": "agreement_name",
+    "field_type": "text",
+    "is_required": true,
+    "default_value": "",
+    "order": 1,
+    "id": null,
+    "template_id": null
+  },
+  {
+    "field_name": "客户名称",
+    "field_key": "customer_name",
+    "field_type": "text",
+    "is_required": true,
+    "default_value": "",
+    "order": 2,
+    "id": null,
+    "template_id": null
+  }]
+```
+
+那协议就一定存在 `"agreement_name": "张三日本东京五日游服务协议",`, `"agreement_type": "旅游服务协议"`, 只不过对应的值可能为空, 因为协议可能是草稿单, 用户有很多区域并没有填写, 当对应的值为空时, 就展示 field 对应的默认值就行了, 下面是解析渲染数据的核心部分, 至于完整逻辑可以参考渲染模板的逻辑, 这里不提供赘述:
+
+```js
+initFormData() {
+  // 重置表单数据
+  this.formData = {};
+  
+  if (!this.agreement || !this.agreement.template || !this.agreement.template.fields) {
+    return;
+  }
+  
+  // 遍历所有模板字段
+  this.agreement.template.fields.forEach(field => {
+    const fieldKey = field.field_key;
+    
+    // 优先使用协议中已有的值
+    if (this.agreement.template_values && 
+        this.agreement.template_values[fieldKey] !== undefined && 
+        this.agreement.template_values[fieldKey] !== null && 
+        this.agreement.template_values[fieldKey] !== '') {
+      this.formData[fieldKey] = this.agreement.template_values[fieldKey];
+    } 
+    // 对于公共字段，也可能存储在协议的顶层属性中
+    else if (this.agreement[fieldKey] !== undefined && 
+            this.agreement[fieldKey] !== null && 
+            this.agreement[fieldKey] !== '') {
+      this.formData[fieldKey] = this.agreement[fieldKey];
+    }
+    // 如果没有值，则使用默认值
+    else {
+      this.formData[fieldKey] = field.default_value || '';
+    }
+  });
+}
+```
+
+字段显示需要排序, 排序逻辑:
+
+```js
+sortedFields() {
+  if (!this.agreement || !this.agreement.template || !this.agreement.template.fields) {
+    return [];
+  }
+  
+  return [...this.agreement.template.fields].sort((a, b) => a.order - b.order);
+}
+```
+
+表单渲染:
+
+```js
+<div 
+  v-for="field in sortedFields" 
+  :key="field.id" 
+  class="form-field"
+>
+  <label :for="`field_${field.id}`" class="field-label">
+    {{ field.field_name }}
+    <span v-if="field.is_required" class="required">*</span>
+  </label>
+  
+  <div class="field-input">
+    <!-- 根据字段类型渲染不同的输入控件 -->
+    <input
+      v-if="field.field_type === 'text'"
+      :id="`field_${field.id}`"
+      v-model="formData[field.field_key]"
+      type="text"
+      class="input-text"
+      :required="field.is_required"
+      :placeholder="`请输入${field.field_name}`"
+    />
+    
+    <!-- 其他类型的输入控件... -->
+  </div>
+</div>
+```
+
+加载协议:
+
+```js
+async loadAgreement() {
+  try {
+    const response = await axios.get(`/api/v1/agreements/${this.agreementId}`);
+    this.agreement = response.data;
+    this.initFormData();
+    this.isLoaded = true;
+  } catch (error) {
+    this.error = `加载协议失败: ${error.message}`;
+    console.error('加载协议失败:', error);
+  }
+}
+```
+
+## 2. 模板后端实现
 
 ### 2.1. 后端 数据库表
 
@@ -68,9 +442,12 @@ CREATE TABLE `template_categories` (
   `id` int NOT NULL AUTO_INCREMENT,
   `name` varchar(100) NOT NULL COMMENT '类别名称',
   `description` text COMMENT '类别描述',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `delete_time` datetime DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
-  KEY `idx_name` (`name`)
+  KEY `idx_name` (`name`),
+  KEY `idx_create_time` (`create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='模板类别表';
 
 -- 模板表（包含内容）
@@ -82,12 +459,14 @@ CREATE TABLE `templates` (
   `content` longtext NOT NULL COMMENT '模板内容',
   `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用',
   `created_by` int NOT NULL COMMENT '创建者ID',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `delete_time` datetime DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
   KEY `idx_category` (`category_id`),
   KEY `idx_name` (`name`),
   KEY `idx_active` (`is_active`),
+  KEY `idx_create_time` (`create_time`)
   CONSTRAINT `fk_template_category` FOREIGN KEY (`category_id`) REFERENCES `template_categories` (`id`) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='模板表';
 
@@ -101,6 +480,9 @@ CREATE TABLE `template_fields` (
   `is_required` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否必填',
   `default_value` varchar(500) DEFAULT NULL COMMENT '默认值',
   `order` int NOT NULL DEFAULT '0' COMMENT '排序顺序',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `delete_time` datetime DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_template_field_key` (`template_id`,`field_key`),
   KEY `idx_template` (`template_id`),
@@ -443,7 +825,7 @@ POST /v1/templates
 }
 ```
 
-## 3. 前端实现
+## 3. 模板渲染前端实现
 
 当前支持渲染的输入类型:
 
@@ -484,6 +866,8 @@ API 返回的数据格式:
 ```
 
 ## 4. 前端运行
+
+> 代码仓库: https://github.com/jiyi27/template_render
 
 ```shell
 pnpm create vue@latest
