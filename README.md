@@ -1,3 +1,235 @@
+# 更新 
+
+## 协议模板渲染逻辑
+
+每次页面创建都会执行 `fetchTemplate()` 函数, 从后端拉取 template 数据, 根据代码:
+
+```js
+created() {
+  this.fetchTemplate();
+},
+```
+
+获取的数据格式 template json:
+
+```json
+{
+  "name": "房屋租赁合同",
+  "category_id": 1,
+  "description": "标准房屋租赁合同模板，适用于个人或企业租房场景",
+  "content": "<h2 style=\"text-align: center;\">房屋租赁合同</h2>\n\n<p><strong>出租方（甲方）：</strong>{{landlord_name}}</p>\n<p><strong>身份证号：</strong>{{landlord_id}}</p>\n<p><strong>承租方（乙方）：</strong>{{tenant_name}}</p>\n<p><strong>身份证号：</strong>{{tenant_id}}</p>\n\n<p>甲、乙双方就房屋租赁事宜，达成如下协议：</p>\n\n<h3>第一条 房屋基本情况</h3>\n<p>甲方将位于{{property_address}}的房屋出租给乙方使用。房屋面积为{{property_area}}平方米。</p>\n\n<h3>第二条 租赁期限</h3>\n<p>租赁期共{{lease_term}}个月，自{{start_date}}起至{{end_date}}止。</p>\n\n<h3>第三条 租金及付款方式</h3>\n<p>月租金为人民币{{monthly_rent}}元整。乙方应于每月{{payment_day}}日前向甲方支付当月租金。</p>\n\n<h3>第四条 押金</h3>\n<p>乙方应于签订本合同时向甲方支付押金人民币{{deposit}}元整。</p>\n\n<h3>第五条 双方权利与义务</h3>\n<p>{{rights_obligations}}</p>\n\n<h3>第六条 合同解除</h3>\n<p>{{termination_terms}}</p>\n\n<h3>第七条 其他约定</h3>\n<p>{{additional_terms}}</p>\n\n<p style=\"text-align: right;\">甲方（签字）：_____________ 日期：_____________</p>\n<p style=\"text-align: right;\">乙方（签字）：_____________ 日期：_____________</p>",
+  "is_active": true,
+  "id": 1,
+  "created_by": "1970-01-01T00:00:01Z",
+  "create_time": "2025-04-05T19:06:51+08:00",
+  "update_time": "2025-04-05T19:06:51+08:00",
+  "fields": [
+    {
+      "field_name": "出租方姓名",
+      "field_key": "landlord_name",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 1,
+      "id": 1,
+      "template_id": 1
+    },
+    {
+      "field_name": "房屋地址",
+      "field_key": "property_address",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 5,
+      "id": 5,
+      "template_id": 1
+    }
+  ]
+}
+```
+
+可以看到数据主要分为两类: `template`, 以及 template 中的 `fields`数组, 所以我们定义下面的两个接口以便与后端返回的数据保持一致:
+
+```typescript
+// 字段接口定义
+interface TemplateField {
+  id: number;
+  field_name: string;  // 字段显示名称
+  field_key: string;   // 字段在模板中的占位符键名
+  field_type: FieldType | string; // 字段类型
+  is_required: boolean; // 是否必填
+  default_value: string; // 默认值
+  order: number;       // 排序顺序
+  template_id: number; // 关联的模板ID
+}
+
+// 模板接口定义
+interface Template {
+  id: number;
+  name: string;        // 模板名称
+  category_id: number; // 分类ID
+  description: string; // 模板描述
+  content: string;     // 模板HTML内容
+  is_active: boolean;  // 是否激活
+  created_by: string;  // 创建者
+  create_time: string; // 创建时间
+  update_time: string; // 更新时间
+  fields: TemplateField[]; // 模板包含的字段
+}
+```
+
+`fetchTemplate()` 函数每次执行都会把获得的 json 数据解构到上面我们定义的  `Template` 实例中(可查看 fetchTemplate() 函数定义), 也就是下面的 dada 中的 template 实例:
+
+```js
+data() {
+  return {
+    template: null as Template | null,
+    formData: {} as FormData,
+    loading: false,
+    error: null as string | null,
+    showPreview: false,
+  };
+},
+```
+
+这样我们就获取到了数据, 在渲染模板前, 还需要**进行数据准备**工作,  这里注意, 我们获取到的数据 每个 field 都有一个 字段 `order`, 所以我们还有个函数, 主要就是在渲染模板前 对这些字段进行排序以便可以按照字段的顺序渲染模板 (比如甲方 乙方 应该放到最前面)
+
+```js 
+computed: {
+  sortedFields(): TemplateField[] {
+    // 按照order字段排序字段
+    return this.template?.fields?.sort((a, b) => a.order - b.order) || [];
+  }
+}
+```
+
+然后就可以渲染模板表单了:
+
+```vue
+<form v-if="template" @submit.prevent="submitForm">
+  <div
+      v-for="field in sortedFields"
+      :key="field.id"
+      class="form-field"
+  >
+    ...
+```
+
+可以看到在这里我们遍历 排序后的 fields, 然后根据各自对应的属性创建对应的 输入 , 比如 长文本, 文本, 日期, 目前只支持这三种:
+
+```vue
+<input
+  v-if="
+    field.field_type === 'text' ||
+    field.field_type === 'number' ||
+    field.field_type === 'date'"
+       ....
+```
+
+然后还可以根据 field 的 placeholder 或者 is_required 属性创建对应的 `<input>` 元素, 这样我们的模板就渲染出来了,
+
+除此之外还有**预览功能**:
+
+观察代码除了 `sortedFields` 之外, 计算属性 `computed` 中还有个函数 `renderedContent()`:
+
+```js
+renderedContent(): string {
+  if (!this.template) return "";
+
+  // 替换模板中的占位符为表单数据
+  let content = this.template.content;
+  for (const key in this.formData) {
+    const regex = new RegExp(`{{${key}}}`, "g");
+    content = content.replace(regex, this.formData[key] || "___");
+  }
+
+  return content;
+}
+```
+
+这段代码就是处理上面我们获取到的 template 的 content 字段的内容:
+
+```
+  "content": "<h2 style=\"text-align: center;\">房屋租赁合同</h2>\n\n<p><strong>出租方（甲方）：</strong>{{landlord_name}}</p>\n<p><strong>身份证号：</strong>{{landlord_id}}</p>\n<p><strong>承租方（乙方）：</strong>{{tenant_name}}</p>\n<p><strong>身份证号：</strong>{{tenant_id}}</p>\n\n<p>甲、乙双方就房屋租赁事宜，达成如下协议：</p>\n\n<h3>第一条 房屋基本情况</h3>\n<p>甲方将位于{{property_address}}的房屋出租给乙方使用。房屋面积为{{property_area}}平方米。</p>\n\n<h3>第二条 租赁期限</h3>\n<p>租赁期共{{lease_term}}个月，自{{start_date}}起至{{end_date}}止。</p>\n\n<h3>第三条 租金及付款方式</h3>\n<p>月租金为人民币{{monthly_rent}}元整。乙方应于每月{{payment_day}}日前向甲方支付当月租金。</p>\n\n<h3>第四条 押金</h3>\n<p>乙方应于签订本合同时向甲方支付押金人民币{{deposit}}元整。</p>\n\n<h3>第五条 双方权利与义务</h3>\n<p>{{rights_obligations}}</p>\n\n<h3>第六条 合同解除</h3>\n<p>{{termination_terms}}</p>\n\n<h3>第七条 其他约定</h3>\n<p>{{additional_terms}}</p>\n\n<p style=\"text-align: right;\">甲方（签字）：_____________ 日期：_____________</p>\n<p style=\"text-align: right;\">乙方（签字）：_____________ 日期：_____________</p>",
+```
+
+我们可以简化一下上面的数据:
+
+```
+<h2 style="text-align: center;">房屋租赁合同</h2>
+<p><strong>出租方（甲方）：</strong>{{landlord_name}}</p>
+<p><strong>身份证号：</strong>{{landlord_id}}</p>
+<p><strong>承租方（乙方）：</strong>{{tenant_name}}</p>
+...
+```
+
+也就是上面这些, 可以看到有一些占位符: `{{lease_term}}`, `{{start_date}}`, 上面的函数 ` renderedContent()`  就是干这个事, 把占位符替换为对应的 表单中的 值, 若表单中的值为空, 则使用 `___`代替:
+
+```js
+for (const key in this.formData) {
+  const regex = new RegExp(`{{${key}}}`, "g");
+  content = content.replace(regex, this.formData[key] || "___");
+}
+```
+
+为什么这样可以保证数据不会被出现错的位置呢?
+
+这就是在创建模板的时候, 录入的 模板内容 content 也就是上面的一堆占位符 要和 template.field 中的 order 字段顺序保持一致, 比如甲方放到第一个, 那 `select order from template_fields where template_id = 001 and field_name = 'part_a'` 的值就应该为 1, 创建模板的时候都可以直接指定, 可以看一下 Swagger 文档中的 `POST v1/templates` 部分数据格式要求:
+
+```
+{
+  "name": "string",
+  "category_id": 0,
+  "description": "string",
+  "content": "string",
+  "is_active": true,
+  "fields": []
+}
+```
+
+直接在 `fields` 提供顺序:
+
+```json
+{
+  "name": "房屋租赁合同模板",
+  "category_id": 1,
+  "description": "...",
+  "content": "
+  <h2 style=\"text-align: center;\">房屋租赁合同</h2>\n\n
+  <p><strong>出租方（甲方）：</strong>{{landlord_name}}</p>\n
+  <p><strong>身份证号：</strong>{{landlord_id}}</p>\n
+  <p><strong>承租方（乙方）：</strong>{{tenant_name}}</p>\n....",
+  "is_active": true,
+  "fields": [
+    {
+      "field_name": "甲方（房东姓名）",
+      "field_key": "landlord_name",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 1,
+      "template_id": 1001
+    },
+    {
+      "field_name": "乙方（租户姓名）",
+      "field_key": "tenant_name",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 2,
+      "template_id": 1001
+    },
+    {
+      "field_name": "甲方身份证号",
+      "field_key": "landlord_id",
+      "field_type": "text",
+      "is_required": true,
+      "default_value": "",
+      "order": 3,
+      "template_id": 1001
+    },
+```
+---------------
 ## 1. 协议表重构
 
 > 背景: 模板是用来创建协议的, 协议就像合同 有 甲方 乙方 客户名 协议内容 等等信息, 但是呢不同的类型客户可能需要不同类型的合同协议格式, 所以才会有很多协议模板, 就像我们写简历的时候也会有不同的模板, 创建简历一般不会选个空白文档开始自己写, 而是选个自己喜欢的模板开始写, 协议模板大概也是这个意思
