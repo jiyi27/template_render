@@ -1,220 +1,259 @@
-// TemplateRenderer.vue
 <template>
-    <div class="template-container">
-        <h1 v-if="template">{{ template.name }}</h1>
-        <p class="description" v-if="template">{{ template.description }}</p>
+  <div class="template-container">
+    <h1 v-if="template">{{ template.name }}</h1>
+    <p class="description" v-if="template">{{ template.description }}</p>
 
-        <form v-if="template" @submit.prevent="submitForm">
-            <div
-                v-for="field in sortedFields"
-                :key="field.id"
-                class="form-field"
-            >
-                <label :for="`field_${field.id}`" class="field-label">
-                    {{ field.field_name }}
-                    <span v-if="field.is_required" class="required">*</span>
-                </label>
+    <form v-if="template" @submit.prevent="submitForm">
+      <div
+          v-for="field in sortedFields"
+          :key="field.id"
+          class="form-field"
+      >
+        <label :for="`field_${field.id}`" class="field-label">
+          {{ field.field_name }}
+          <span v-if="field.is_required" class="required">*</span>
+        </label>
 
-                <!-- 只保留文本和文本区域 -->
-                <div class="field-input">
-                    <!-- 普通文本输入 -->
-                    <input
-                        v-if="
+        <!-- 只保留文本和文本区域 -->
+        <div class="field-input">
+          <!-- 普通文本输入 -->
+          <input
+              v-if="
                             field.field_type === 'text' ||
                             field.field_type === 'number' ||
                             field.field_type === 'date'
                         "
-                        :id="`field_${field.id}`"
-                        v-model="formData[field.field_key]"
-                        :type="
+              :id="`field_${field.id}`"
+              v-model="formData[field.field_key]"
+              :type="
                             field.field_type === 'number'
                                 ? 'number'
                                 : field.field_type === 'date'
                                 ? 'date'
                                 : 'text'
                         "
-                        class="input-text"
-                        :required="field.is_required"
-                        :placeholder="`请输入${field.field_name}`"
-                    />
+              class="input-text"
+              :required="field.is_required"
+              :placeholder="`请输入${field.field_name}`"
+          />
 
-                    <!-- 长文本区域 -->
-                    <textarea
-                        v-else-if="field.field_type === 'textarea'"
-                        :id="`field_${field.id}`"
-                        v-model="formData[field.field_key]"
-                        class="input-textarea"
-                        :required="field.is_required"
-                        :placeholder="`请输入${field.field_name}`"
-                        rows="4"
-                    ></textarea>
-                </div>
-            </div>
-
-            <div class="form-actions">
-                <button type="submit" class="btn-submit">提交</button>
-                <button
-                    type="button"
-                    class="btn-preview"
-                    @click="previewAgreement"
-                >
-                    预览协议
-                </button>
-            </div>
-        </form>
-
-        <!-- 预览模态框 -->
-        <div v-if="showPreview" class="preview-modal">
-            <div class="preview-content">
-                <h2>协议预览</h2>
-                <div class="preview-text" v-html="renderedContent"></div>
-                <div class="preview-actions">
-                    <button @click="showPreview = false" class="btn-close">
-                        关闭
-                    </button>
-                    <button @click="downloadAgreement" class="btn-download">
-                        下载
-                    </button>
-                </div>
-            </div>
+          <!-- 长文本区域 -->
+          <textarea
+              v-else-if="field.field_type === 'textarea'"
+              :id="`field_${field.id}`"
+              v-model="formData[field.field_key]"
+              class="input-textarea"
+              :required="field.is_required"
+              :placeholder="`请输入${field.field_name}`"
+              rows="4"
+          ></textarea>
         </div>
+      </div>
 
-        <div v-if="loading" class="loading">加载中...</div>
-        <div v-if="error" class="error-message">{{ error }}</div>
+      <div class="form-actions">
+        <button type="submit" class="btn-submit">提交</button>
+        <button
+            type="button"
+            class="btn-preview"
+            @click="previewAgreement"
+        >
+          预览协议
+        </button>
+      </div>
+    </form>
+
+    <!-- 预览模态框 -->
+    <div v-if="showPreview" class="preview-modal">
+      <div class="preview-content">
+        <h2>协议预览</h2>
+        <div class="preview-text" v-html="renderedContent"></div>
+        <div class="preview-actions">
+          <button @click="showPreview = false" class="btn-close">
+            关闭
+          </button>
+          <button @click="downloadAgreement" class="btn-download">
+            下载
+          </button>
+        </div>
+      </div>
     </div>
+
+    <div v-if="loading" class="loading">加载中...</div>
+    <div v-if="error" class="error-message">{{ error }}</div>
+  </div>
 </template>
 
-<script>
+<script lang="ts">
 import axios from "axios";
+import { defineComponent, PropType } from 'vue';
+
+// 字段接口定义
+interface TemplateField {
+  id: number;
+  field_name: string;  // 字段显示名称
+  field_key: string;   // 字段在模板中的占位符键名
+  field_type: FieldType | string; // 字段类型
+  is_required: boolean; // 是否必填
+  default_value: string; // 默认值
+  order: number;       // 排序顺序
+  template_id: number; // 关联的模板ID
+}
+
+// 模板接口定义
+interface Template {
+  id: number;
+  name: string;        // 模板名称
+  category_id: number; // 分类ID
+  description: string; // 模板描述
+  content: string;     // 模板HTML内容
+  is_active: boolean;  // 是否激活
+  created_by: string;  // 创建者
+  create_time: string; // 创建时间
+  update_time: string; // 更新时间
+  fields: TemplateField[]; // 模板包含的字段
+}
+
+// 表单数据接口
+interface FormData {
+  [key: string]: string; // 键是字段的field_key，值是用户输入的内容
+}
 
 // 创建axios实例
 const api = axios.create({
-    baseURL: "http://localhost:8084/v1",
-    headers: {
-        accept: "application/json",
-        "Content-Type": "application/json",
-    },
+  baseURL: "http://localhost:8084/v1",
+  headers: {
+    accept: "application/json",
+    "Content-Type": "application/json",
+  },
 });
 
-export default {
-    name: "TemplateRenderer",
-    props: {
-        templateId: {
-            type: [Number, String],
-            required: true,
-        },
-        token: {
-            type: String,
-            required: true,
-        },
+export default defineComponent({
+  name: "TemplateRenderer",
+  props: {
+    templateId: {
+      type: [Number, String] as PropType<number | string>,
+      required: true,
     },
-    data() {
-        return {
-            template: null,
-            formData: {},
-            loading: false,
-            error: null,
-            showPreview: false,
-        };
+    token: {
+      type: String,
+      required: true,
     },
-    computed: {
-        sortedFields() {
-            return (
-                this.template?.fields?.sort((a, b) => a.order - b.order) || []
-            );
-        },
-        renderedContent() {
-            if (!this.template) return "";
-
-            let content = this.template.content;
-            for (const key in this.formData) {
-                const regex = new RegExp(`{{${key}}}`, "g");
-                content = content.replace(regex, this.formData[key] || "___");
-            }
-
-            return content;
-        },
+  },
+  data() {
+    return {
+      template: null as Template | null,
+      formData: {} as FormData,
+      loading: false,
+      error: null as string | null,
+      showPreview: false,
+    };
+  },
+  computed: {
+    sortedFields(): TemplateField[] {
+      // 按照order字段排序字段
+      return this.template?.fields?.sort((a, b) => a.order - b.order) || [];
     },
-    created() {
-        this.fetchTemplate();
+    renderedContent(): string {
+      if (!this.template) return "";
+
+      // 替换模板中的占位符为表单数据
+      let content = this.template.content;
+      for (const key in this.formData) {
+        const regex = new RegExp(`{{${key}}}`, "g");
+        content = content.replace(regex, this.formData[key] || "___");
+      }
+
+      return content;
     },
-    methods: {
-        fetchTemplate() {
-            this.loading = true;
-            this.error = null;
+  },
+  created() {
+    this.fetchTemplate();
+  },
+  methods: {
+    fetchTemplate() {
+      this.loading = true;
+      this.error = null;
 
-            api.get(`/templates/${this.templateId}`, {
-                headers: {
-                    token: this.token,
-                },
-            })
-                .then((response) => {
-                    this.template = response.data;
-                    this.initFormData();
-                })
-                .catch((error) => {
-                    this.error =
-                        "获取模板数据失败：" +
-                        (error.response?.data?.message || error.message);
-                })
-                .finally(() => {
-                    this.loading = false;
-                });
+      // 从API获取模板数据
+      api.get(`/templates/${this.templateId}`, {
+        headers: {
+          token: this.token,
         },
+      })
+          .then((response) => {
+            this.template = response.data as Template;
+            this.initFormData();
+          })
+          .catch((error) => {
+            this.error =
+                "获取模板数据失败：" +
+                (error.response?.data?.message || error.message);
+          })
+          .finally(() => {
+            this.loading = false;
+          });
+    },
 
-        initFormData() {
-            if (!this.template || !this.template.fields) return;
+    initFormData() {
+      // 初始化表单数据，使用字段的默认值
+      if (!this.template || !this.template.fields) return;
 
-            this.formData = {};
-            this.template.fields.forEach((field) => {
-                this.formData[field.field_key] = field.default_value || "";
-            });
-        },
+      this.formData = {};
+      this.template.fields.forEach((field) => {
+        this.formData[field.field_key] = field.default_value || "";
+      });
+    },
 
-        submitForm() {
-            const invalidFields = this.validateForm();
-            if (invalidFields.length > 0) {
-                this.error = `请填写以下必填字段: ${invalidFields.join(", ")}`;
-                return;
-            }
+    submitForm() {
+      // 表单提交前验证
+      const invalidFields = this.validateForm();
+      if (invalidFields.length > 0) {
+        this.error = `请填写以下必填字段: ${invalidFields.join(", ")}`;
+        return;
+      }
 
-            // 这里可以添加保存协议的代码
-            // axios.post('/api/agreements', {...})
+      // 这里可以添加保存协议的代码
+      // axios.post('/api/agreements', {...})
 
-            this.previewAgreement();
-        },
+      this.previewAgreement();
+    },
 
-        validateForm() {
-            const invalidFields = [];
+    validateForm(): string[] {
+      // 验证表单，返回未填写的必填字段名称列表
+      const invalidFields: string[] = [];
 
-            if (!this.template || !this.template.fields) return invalidFields;
+      if (!this.template || !this.template.fields) return invalidFields;
 
-            this.template.fields.forEach((field) => {
-                if (field.is_required === true) {
-                    const value = this.formData[field.field_key];
-                    if (value === undefined || value === null || value === "") {
-                        invalidFields.push(field.field_name);
-                    }
-                }
-            });
+      this.template.fields.forEach((field) => {
+        if (field.is_required === true) {
+          const value = this.formData[field.field_key];
+          if (value === undefined || value === null || value === "") {
+            invalidFields.push(field.field_name);
+          }
+        }
+      });
 
-            return invalidFields;
-        },
+      return invalidFields;
+    },
 
-        previewAgreement() {
-            const invalidFields = this.validateForm();
-            if (invalidFields.length > 0) {
-                this.error = `请填写以下必填字段: ${invalidFields.join(", ")}`;
-                return;
-            }
+    previewAgreement() {
+      // 预览协议前验证表单
+      const invalidFields = this.validateForm();
+      if (invalidFields.length > 0) {
+        this.error = `请填写以下必填字段: ${invalidFields.join(", ")}`;
+        return;
+      }
 
-            this.showPreview = true;
-        },
+      this.showPreview = true;
+    },
 
-        downloadAgreement() {
-            const htmlContent = `
+    downloadAgreement() {
+      // 下载协议为HTML文件
+      if (!this.template) return;
+
+      const htmlContent = `
         <!DOCTYPE html>
-        <html>
+        <html lang="ch">
           <head>
             <meta charset="utf-8">
             <title>${this.template.name}</title>
@@ -235,19 +274,20 @@ export default {
         </html>
       `;
 
-            const blob = new Blob([htmlContent], { type: "text/html" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `${this.template.name}.html`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        },
+      const blob = new Blob([htmlContent], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${this.template.name}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     },
-};
+  },
+});
 </script>
+
 
 <style scoped>
 .template-container {
